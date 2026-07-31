@@ -1,4 +1,4 @@
-import { ToolDecorator as Tool, ExecutionContext, z } from '@nitrostack/core';
+import { ToolDecorator as Tool, Widget, ExecutionContext, z } from '@nitrostack/core';
 
 type RiskLevel = 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
 
@@ -101,6 +101,7 @@ export class SeizureTools {
       motionMagnitude: z.number().describe('Calculated 3-axis acceleration magnitude'),
     }),
   })
+  @Widget('seizure-risk-result')
   async predictSeizureRisk(input: { patientId?: string; heartRate: number; eda: number; motionMagnitude: number }, ctx: ExecutionContext) {
     const { patientId, heartRate, eda, motionMagnitude } = input;
     const highHR = heartRate > 110;
@@ -141,6 +142,9 @@ export class SeizureTools {
       timestamp: new Date().toISOString(),
       riskLevel,
       probability,
+      heartRate,
+      eda,
+      motionMagnitude,
       alertRequired: caregiverAlert.triggered,
       caregiverAlert: {
         ...caregiverAlert,
@@ -164,6 +168,7 @@ export class SeizureTools {
       longitude: z.number().optional().describe('Patient GPS longitude'),
     }),
   })
+  @Widget('emergency-alert-result')
   async triggerEmergencyAlert(
     input: { patientId: string; riskLevel: string; latitude?: number; longitude?: number },
     ctx: ExecutionContext,
