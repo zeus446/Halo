@@ -1,0 +1,135 @@
+{
+  "version": "1.0.0",
+  "widgets": [
+    {
+      "uri": "/calculator-result",
+      "name": "Calculator Result",
+      "description": "Displays the result of a calculation with operation details",
+      "examples": [
+        {
+          "name": "Addition Example",
+          "description": "Shows the result of adding 5 + 3",
+          "data": {
+            "operation": "add",
+            "a": 5,
+            "b": 3,
+            "result": 8,
+            "expression": "5 + 3 = 8"
+          }
+        },
+        {
+          "name": "Multiplication Example",
+          "description": "Shows the result of multiplying 6 × 7",
+          "data": {
+            "operation": "multiply",
+            "a": 6,
+            "b": 7,
+            "result": 42,
+            "expression": "6 × 7 = 42"
+          }
+        },
+        {
+          "name": "Division Example",
+          "description": "Shows the result of dividing 20 ÷ 4",
+          "data": {
+            "operation": "divide",
+            "a": 20,
+            "b": 4,
+            "result": 5,
+            "expression": "20 ÷ 4 = 5"
+          }
+        }
+      ],
+      "tags": ["calculator", "math", "result"]
+    },
+    {
+      "uri": "/seizure-risk-result",
+      "name": "Seizure Risk Result",
+      "description": "Risk gauge for predict_seizure_risk showing probability, vitals, and caregiver alert / SMS status",
+      "examples": [
+        {
+          "name": "Low Risk",
+          "description": "Normal telemetry, no alert triggered",
+          "data": {
+            "timestamp": "2026-07-31T09:00:00.000Z",
+            "riskLevel": "LOW",
+            "probability": 0.05,
+            "heartRate": 78,
+            "eda": 1.1,
+            "motionMagnitude": 0.6,
+            "alertRequired": false,
+            "caregiverAlert": {
+              "triggered": false,
+              "patientId": "patient-001",
+              "recipients": [],
+              "message": "",
+              "sms": { "enabled": false, "sent": 0, "failed": 0, "results": [] }
+            }
+          }
+        },
+        {
+          "name": "Critical Risk",
+          "description": "Elevated HR, EDA, and motion trigger a caregiver alert",
+          "data": {
+            "timestamp": "2026-07-31T09:00:00.000Z",
+            "riskLevel": "CRITICAL",
+            "probability": 0.92,
+            "heartRate": 138,
+            "eda": 4.2,
+            "motionMagnitude": 3.8,
+            "alertRequired": true,
+            "caregiverAlert": {
+              "triggered": true,
+              "patientId": "patient-001",
+              "recipients": ["Emergency Caregiver", "Primary Physician", "On-Call Nurse"],
+              "message": "Seizure risk CRITICAL detected for patient patient-001. Estimated probability: 92.0%.",
+              "sms": {
+                "enabled": true,
+                "sent": 2,
+                "failed": 1,
+                "results": [
+                  { "ok": true, "to": "Emergency Caregiver", "status": "sent", "sid": "1001" },
+                  { "ok": true, "to": "Primary Physician", "status": "sent", "sid": "1002" },
+                  { "ok": false, "to": "On-Call Nurse", "error": "Telegram bot token not configured" }
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "tags": ["seizure", "risk", "telemetry", "health"]
+    },
+    {
+      "uri": "/emergency-alert-result",
+      "name": "Emergency Alert Result",
+      "description": "Dispatch confirmation for trigger_emergency_alert with notified contacts and per-recipient SMS delivery",
+      "examples": [
+        {
+          "name": "Dispatched with location",
+          "description": "Alert dispatched with GPS location attached and mixed SMS delivery",
+          "data": {
+            "success": true,
+            "alertId": "ALT-482913",
+            "timestamp": "2026-07-31T09:02:00.000Z",
+            "status": "DISPATCHED",
+            "notifiedContacts": ["Emergency Caregiver", "Primary Physician", "On-Call Nurse"],
+            "locationAttached": true,
+            "sms": {
+              "enabled": true,
+              "sent": 2,
+              "failed": 1,
+              "results": [
+                { "ok": true, "to": "Emergency Caregiver", "status": "sent", "sid": "2001" },
+                { "ok": true, "to": "Primary Physician", "status": "sent", "sid": "2002" },
+                { "ok": false, "to": "On-Call Nurse", "error": "Telegram bot token not configured" }
+              ]
+            }
+          }
+        }
+      ],
+      "tags": ["emergency", "alert", "dispatch", "health"]
+    }
+  ],
+  "generatedAt": "2025-01-01T00:00:00.000Z"
+}
+
