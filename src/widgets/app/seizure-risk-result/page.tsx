@@ -1,13 +1,23 @@
 'use client';
 
-import { useTheme, useWidgetState, useWidgetSDK } from '@nitrostack/widgets';
+import { useEffect, useRef, useState } from 'react';
+import { useTheme, useWidgetState, useWidgetSDK, prefersReducedMotion } from '@nitrostack/widgets';
 
 /**
  * Seizure Risk Result Widget
  *
- * Displays the output of `predict_seizure_risk`: a probability dial, the
- * telemetry that drove the reading, and — when a caregiver alert fired —
- * delivery status for each recipient.
+ * Primary data source is the snapshot returned by `predict_seizure_risk`.
+ * On top of that, this widget can also track CONTINUOUS input two ways:
+ *
+ *  1. LIVE — if a Server-Sent Events endpoint is reachable (e.g. the
+ *     `/api/stream` broadcaster in `src/ingest.ts`), each event updates the
+ *     gauge in place without a new tool call.
+ *  2. TEST MODE — press Ctrl+Shift+T to simulate a continuous stream of
+ *     readings locally, so continuous-input handling can be verified
+ *     without a live backend running. Press again to stop.
+ *
+ * Whichever live/test reading arrived most recently takes priority over the
+ * static tool-call snapshot; if neither is active, the snapshot is shown.
  */
 
 interface SmsResult {
@@ -46,6 +56,56 @@ const RISK_STYLES: Record<string, { color: string; ink: string; label: string }>
   HIGH: { color: '#D9622B', ink: '#4A210C', label: 'High' },
   CRITICAL: { color: '#C23B4E', ink: '#4A0F17', label: 'Critical' },
 };
+
+const EMPTY_ALERT = {
+  triggered: false,
+  patientId: 'unknown-patient',
+  recipients: [] as string[],
+  message: '',
+  sms: { enabled: false, sent: 0, failed: 0, results: [] as SmsResult[] },
+};
+
+// Maps the raw telemetry payload shape broadcast by src/ingest.ts
+// ({ heartRate, hrv, eda, motionMagnitude, riskScore, prediction, riskFactors })
+// onto the widget's SeizureRiskData shape.
+function fromTelemetryPayload(raw: any, previousAlert: SeizureRiskData['caregiverAlert']): SeizureRiskData {
+  const predictionToRisk: Record<string, SeizureRiskData['riskLevel']> = {
+    NORMAL: 'LOW',
+    ACTIVE: 'MODERATE',
+    'PRE-ICTAL': 'HIGH',
+    ACUTE_SEIZURE: 'CRITICAL',
+  };
+  const riskLevel = predictionToRisk[raw.prediction] ?? 'LOW';
+  const probability = typeof raw.riskScore === 'number' ? Math.max(0, Math.min(1, raw.riskScore / 100)) : 0;
+
+  return {
+    timestamp: new Date().toISOString(),
+    riskLevel,
+    probability,
+    alertRequired: probability >= 0.65,
+    heartRate: raw.heartRate,
+    eda: raw.eda,
+    motionMagnitude: typeof raw.motionMagnitude === 'number' ? Number(raw.motionMagnitude.toFixed(2)) : raw.motionMagnitude,
+    caregiverAlert: previousAlert,
+  };
+}
+
+function synthesizeTestReading(previousAlert: SeizureRiskData['caregiverAlert']): SeizureRiskData {
+  const cycle: SeizureRiskData['riskLevel'][] = ['LOW', 'MODERATE', 'HIGH', 'CRITICAL', 'HIGH', 'MODERATE'];
+  const level = cycle[Math.floor(Date.now() / 1400) % cycle.length];
+  const base = { LOW: 0.08, MODERATE: 0.4, HIGH: 0.7, CRITICAL: 0.93 }[level];
+  const probability = Math.max(0, Math.min(1, base + (Math.random() - 0.5) * 0.08));
+  return {
+    timestamp: new Date().toISOString(),
+    riskLevel: level,
+    probability,
+    alertRequired: probability >= 0.65,
+    heartRate: Math.round(72 + probability * 70 + (Math.random() - 0.5) * 6),
+    eda: Number((1 + probability * 3.5 + (Math.random() - 0.5) * 0.3).toFixed(2)),
+    motionMagnitude: Number((0.6 + probability * 3.2 + (Math.random() - 0.5) * 0.3).toFixed(2)),
+    caregiverAlert: previousAlert,
+  };
+}
 
 function ArcGauge({ probability, color, isDark }: { probability: number; color: string; isDark: boolean }) {
   const pct = Math.max(0, Math.min(1, probability));
@@ -111,7 +171,73 @@ export default function SeizureRiskResult() {
   const theme = useTheme();
   const { getToolOutput } = useWidgetSDK();
   const [state, setState] = useWidgetState<{ showRecipients: boolean }>(() => ({ showRecipients: false }));
-  const data = getToolOutput<SeizureRiskData>();
+  const snapshot = getToolOutput<SeizureRiskData>();
+  const reduceMotion = prefersReducedMotion();
+
+  // Continuous-input state: whichever of these is set most recently wins
+  // over the static tool-call snapshot.
+  const [liveReading, setLiveReading] = useState<SeizureRiskData | null>(null);
+  const [connMode, setConnMode] = useState<'snapshot' | 'live' | 'test'>('snapshot');
+  const testTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastAlertRef = useRef(EMPTY_ALERT);
+
+  useEffect(() => {
+    if (snapshot?.caregiverAlert) lastAlertRef.current = snapshot.caregiverAlert;
+  }, [snapshot]);
+
+  // 1. Try to attach to a live SSE telemetry stream, if one is reachable.
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.EventSource === 'undefined') return;
+    const streamUrl = (process.env.NEXT_PUBLIC_TELEMETRY_STREAM_URL as string | undefined) || '/api/stream';
+
+    let source: EventSource | null = null;
+    try {
+      source = new EventSource(streamUrl);
+    } catch {
+      return;
+    }
+
+    source.onmessage = (event) => {
+      try {
+        const raw = JSON.parse(event.data);
+        setLiveReading(fromTelemetryPayload(raw, lastAlertRef.current));
+        setConnMode((mode) => (mode === 'test' ? mode : 'live'));
+      } catch {
+        // ignore malformed frames
+      }
+    };
+    source.onerror = () => {
+      setConnMode((mode) => (mode === 'live' ? 'snapshot' : mode));
+    };
+
+    return () => source?.close();
+  }, []);
+
+  // 2. Ctrl+Shift+T toggles a local synthetic continuous-input test.
+  useEffect(() => {
+    const handleKeydown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 't') {
+        e.preventDefault();
+        if (testTimerRef.current) {
+          clearInterval(testTimerRef.current);
+          testTimerRef.current = null;
+          setConnMode('snapshot');
+          setLiveReading(null);
+        } else {
+          setConnMode('test');
+          setLiveReading(synthesizeTestReading(lastAlertRef.current));
+          testTimerRef.current = setInterval(() => {
+            setLiveReading(synthesizeTestReading(lastAlertRef.current));
+          }, 1400);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeydown);
+    return () => {
+      window.removeEventListener('keydown', handleKeydown);
+      if (testTimerRef.current) clearInterval(testTimerRef.current);
+    };
+  }, []);
 
   const isDark = theme === 'dark';
   const bg = isDark ? '#12151B' : '#F6F7F9';
@@ -122,10 +248,12 @@ export default function SeizureRiskResult() {
   const mono = "'IBM Plex Mono', 'SF Mono', ui-monospace, monospace";
   const sans = "'Inter', system-ui, -apple-system, sans-serif";
 
+  const data = liveReading ?? snapshot;
+
   if (!data) {
     return (
       <div style={{ padding: 24, textAlign: 'center', color: muted, fontFamily: sans, background: bg }}>
-        Reading telemetry…
+        Reading telemetry… <span style={{ display: 'block', fontSize: 11, marginTop: 6 }}>(Ctrl+Shift+T to simulate a stream)</span>
       </div>
     );
   }
@@ -149,6 +277,15 @@ export default function SeizureRiskResult() {
         color: ink,
       }}
     >
+      {!reduceMotion && (
+        <style>{`
+          @keyframes halo-live-pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.35; }
+            100% { opacity: 1; }
+          }
+        `}</style>
+      )}
       <div
         style={{
           background: cardBg,
@@ -163,11 +300,26 @@ export default function SeizureRiskResult() {
             Seizure Monitor
           </span>
           <span style={{ fontSize: 11, color: muted, fontFamily: mono }}>
-            {new Date(data.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {new Date(data.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
           </span>
         </div>
-        <div style={{ fontSize: 13, color: muted, marginBottom: 10 }}>
-          Patient <strong style={{ color: ink }}>{data.caregiverAlert?.patientId ?? 'unknown'}</strong>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <span style={{ fontSize: 13, color: muted }}>
+            Patient <strong style={{ color: ink }}>{lastAlertRef.current.patientId}</strong>
+          </span>
+          {connMode === 'live' && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10.5, fontWeight: 700, color: '#2F9E6E' }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#2F9E6E', animation: reduceMotion ? 'none' : 'halo-live-pulse 1.6s ease-in-out infinite' }} />
+              LIVE
+            </span>
+          )}
+          {connMode === 'test' && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10.5, fontWeight: 700, color: '#C68A1D' }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#C68A1D', animation: reduceMotion ? 'none' : 'halo-live-pulse 1.6s ease-in-out infinite' }} />
+              TEST MODE
+            </span>
+          )}
         </div>
 
         {/* Gauge */}
@@ -234,29 +386,35 @@ export default function SeizureRiskResult() {
         >
           {data.alertRequired ? (
             <>
-              <div style={{ fontSize: 13, lineHeight: 1.4, color: ink }}>{data.caregiverAlert.message}</div>
+              <div style={{ fontSize: 13, lineHeight: 1.4, color: ink }}>
+                {data.caregiverAlert.message || `Seizure risk ${risk.label.toUpperCase()} detected. Estimated probability: ${pctLabel}.`}
+              </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8 }}>
                 <span style={{ fontSize: 12, color: muted }}>
                   {data.caregiverAlert.sms.enabled
                     ? `SMS: ${data.caregiverAlert.sms.sent} sent${data.caregiverAlert.sms.failed ? `, ${data.caregiverAlert.sms.failed} failed` : ''}`
-                    : 'SMS delivery not configured'}
+                    : connMode === 'snapshot'
+                      ? 'SMS delivery not configured'
+                      : 'Awaiting caregiver dispatch'}
                 </span>
-                <button
-                  onClick={() => setState({ showRecipients: !state?.showRecipients })}
-                  style={{
-                    fontSize: 11,
-                    color: risk.color,
-                    background: 'transparent',
-                    border: 'none',
-                    cursor: 'pointer',
-                    fontWeight: 600,
-                    padding: 0,
-                  }}
-                >
-                  {state?.showRecipients ? 'Hide recipients' : 'Show recipients'}
-                </button>
+                {data.caregiverAlert.recipients.length > 0 && (
+                  <button
+                    onClick={() => setState({ showRecipients: !state?.showRecipients })}
+                    style={{
+                      fontSize: 11,
+                      color: risk.color,
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontWeight: 600,
+                      padding: 0,
+                    }}
+                  >
+                    {state?.showRecipients ? 'Hide recipients' : 'Show recipients'}
+                  </button>
+                )}
               </div>
-              {state?.showRecipients && (
+              {state?.showRecipients && data.caregiverAlert.recipients.length > 0 && (
                 <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: muted }}>
                   {data.caregiverAlert.recipients.map((r) => (
                     <li key={r}>{r}</li>
@@ -267,6 +425,10 @@ export default function SeizureRiskResult() {
           ) : (
             <div style={{ fontSize: 12, color: muted }}>No caregiver alert triggered at this reading.</div>
           )}
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 10, color: muted, textAlign: 'right' }}>
+          Ctrl+Shift+T to {connMode === 'test' ? 'stop' : 'simulate'} a live stream
         </div>
       </div>
     </div>
