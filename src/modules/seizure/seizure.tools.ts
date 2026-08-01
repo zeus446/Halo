@@ -201,4 +201,34 @@ export class SeizureTools {
       },
     };
   }
+
+  @Tool({
+    name: 'list_patient_stream',
+    description: 'Returns the current roster of monitored patients with their latest risk status, for a live dashboard view.',
+    inputSchema: z.object({
+      limit: z.number().optional().describe('Maximum number of patients to return'),
+    }),
+  })
+  @Widget('patient-stream-result')
+  async listPatientStream(input: { limit?: number }, ctx: ExecutionContext) {
+    // NOTE: mock roster — replace with a real device/session store once
+    // telemetry ingestion is wired up (e.g. a websocket or DB-backed feed).
+    const roster: { patientId: string; name: string; riskLevel: RiskLevel; probability: number; lastUpdate: string }[] = [
+      { patientId: 'PT-1042', name: 'A. Sharma', riskLevel: 'CRITICAL', probability: 0.92, lastUpdate: new Date().toISOString() },
+      { patientId: 'PT-1077', name: 'R. Menon', riskLevel: 'HIGH', probability: 0.68, lastUpdate: new Date().toISOString() },
+      { patientId: 'PT-1103', name: 'K. Iyer', riskLevel: 'MODERATE', probability: 0.35, lastUpdate: new Date().toISOString() },
+      { patientId: 'PT-1129', name: 'S. Nair', riskLevel: 'LOW', probability: 0.05, lastUpdate: new Date().toISOString() },
+      { patientId: 'PT-1156', name: 'D. Verma', riskLevel: 'LOW', probability: 0.08, lastUpdate: new Date().toISOString() },
+    ];
+
+    const patients = input.limit ? roster.slice(0, input.limit) : roster;
+
+    ctx.logger.info('Patient stream listed', { count: patients.length });
+
+    return {
+      generatedAt: new Date().toISOString(),
+      count: patients.length,
+      patients,
+    };
+  }
 }
