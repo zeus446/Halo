@@ -5,21 +5,53 @@ const app = express();
 
 app.use(express.json({ limit: '10mb' }));
 
-const token = process.env.TELEGRAM_BOT_TOKEN || '8665069056:AAHuJVQqQSWAXu8wsiUfIp8ciajjc8AbaBg';
-const chatId = process.env.TELEGRAM_CHAT_ID || '8613811117';
+const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+const chatIds = (process.env.TELEGRAM_CHAT_IDS ?? process.env.TELEGRAM_CHAT_ID ?? '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
 
 async function sendTelegramAlert(text: string) {
+  if (!token) {
+    console.error('❌ [Telegram] notification skipped: TELEGRAM_BOT_TOKEN is not configured.');
+    return;
+  }
+
+  if (chatIds.length === 0) {
+    console.error('❌ [Telegram] notification skipped: TELEGRAM_CHAT_ID or TELEGRAM_CHAT_IDS is not configured.');
+    return;
+  }
+
   try {
-    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
-    });
-    if (response.ok) {
-      console.log('📤 [Telegram] Alert dispatched successfully!');
+    const results = await Promise.all(
+      chatIds.map(async (chatId) => {
+        const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+        });
+
+        const data = await response.json().catch(() => ({})) as {
+          ok?: boolean;
+          description?: string;
+          result?: { message_id?: number };
+        };
+
+        if (!response.ok || data.ok === false) {
+          console.error(`❌ [Telegram] message failed for chat ${chatId}: ${response.status} ${data.description ?? 'Unknown Telegram error'}`);
+          return false;
+        }
+
+        console.log(`📤 [Telegram] Alert dispatched to ${chatId} successfully.`);
+        return true;
+      }),
+    );
+
+    if (!results.some(Boolean)) {
+      console.error('❌ [Telegram] no alert could be delivered. Check the bot token and chat ID values.');
     }
   } catch (err) {
-    console.error('❌ Telegram Send Error:', err);
+    console.error('❌ [Telegram] send error:', err);
   }
 }
 
